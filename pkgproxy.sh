@@ -16,7 +16,7 @@ show_help() {
     echo "Options:"
     echo "  --target=<distro>        Specify the target OS (Required)"
     echo "  --output=<path>          Local directory for downloads (Default: ./packages)"
-    echo "  --remotelocation=<loc>   Remote destination (e.g., user@ip:/path)"
+    echo "  --remotelocation=<loc>   Remote destination (e.g., user@ip:/path) (requires --remotelocation to be specified)"
     echo "  --remoteinstall          Trigger installation on the remote host after transfer"
     echo "  --listonly               Show dependencies without downloading"
     echo "  --help                   Display this help message"
@@ -25,7 +25,7 @@ show_help() {
     echo "  $SUPPORTED_TARGETS"
     echo ""
     echo "Example:"
-    echo "  getpkgs --target=rocky10 --remoteinstall epel-release htop"
+    echo "  getpkgs --target=rocky10 --remotelocation=root@192.168.3.5:/root --remoteinstall epel-release htop"
     exit 0
 }
 
