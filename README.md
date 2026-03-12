@@ -1,5 +1,5 @@
 # pkgproxy
-Utility to use Docker to download packages for a target OS, and (optionally) SCP them to a remote host that oes not have internet access.
+Utility to use Docker to download packages for a target OS, and (optionally) SCP them to a remote host that oes not have internet access. (Largely vibecoded lol)
 
 Usage: pkgproxy --target=<distro> [options] <package1> [package2 ...]
 
