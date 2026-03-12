@@ -15,4 +15,4 @@ Supported Targets:
   rocky8, rocky9, rocky10, rhel8, rhel9, rhel10, oracle9, ubuntu20, ubuntu22, ubuntu24
 
 Example:
-  getpkgs --target=rocky10 --remotelocation=root@192.168.3.5:/root --remoteinstall epel-release htop
+  getpkgs `--target=rocky10 --remotelocation=root@192.168.3.5:/root --remoteinstall epel-release htop`
