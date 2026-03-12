@@ -11,7 +11,7 @@ SUPPORTED_TARGETS="rocky8, rocky9, rocky10, rhel8, rhel9, rhel10, oracle9, ubunt
 
 # --- Help Function ---
 show_help() {
-    echo "Usage: getpkgs --target=<distro> [options] <package1> [package2 ...]"
+    echo "Usage: pkgproxy --target=<distro> [options] <package1> [package2 ...]"
     echo ""
     echo "Options:"
     echo "  --target=<distro>        Specify the target OS (Required)"
