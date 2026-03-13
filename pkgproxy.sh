@@ -9,20 +9,22 @@ REMOTE_KEY=""
 LIST_ONLY="no"
 PRERUN_SCRIPT=""
 PACKAGES=""
-KEEP_LOCAL="no" # New default
+KEEP_LOCAL="no"
+INSTALL_ONLY="no" # New default
 SUPPORTED_TARGETS="rocky8, rocky9, rocky10, rhel8, rhel9, rhel10, oracle9, ubuntu20, ubuntu22, ubuntu24"
 
 # --- Help Function ---
 show_help() {
-    echo "Usage: pkgproxy --target=<distro> [options] <package1> [package2 ...]"
+    echo "Usage: pkgproxy --target=<distro> [options] <package_names_or_paths>"
     echo ""
     echo "Options:"
     echo "  --target=<distro>        Specify the target OS (Required)"
     echo "  --output=<path>          Local directory for downloads (Default: ./packages)"
     echo "  --remotelocation=<loc>   Remote destination (e.g., user@ip:/path)"
-    echo "  --remotekey=<path>       Path to SSH private key for remote transfer/install"
+    echo "  --remotekey=<path>       Path to SSH private key"
     echo "  --remoteinstall          Trigger installation on the remote host after transfer (requires --remotelocation to be specified)"
-    echo "  --keeplocal              Keep downloaded packages locally after remote install (Default: delete if remoteinstall used)"
+    echo "  --keeplocal              Keep downloaded packages locally after remote install"
+    echo "  --installonly            Skip download; treat arguments as local file paths to transfer/install"
     echo "  --listonly               Show dependencies without downloading"
     echo "  --prerun=<path>          Local script to run inside container before download"
     echo "  --help                   Display this help message"
@@ -43,7 +45,8 @@ while [[ "$#" -gt 0 ]]; do
         --remotelocation=*) REMOTE_LOC="${1#*=}"; shift ;;
         --remotekey=*) REMOTE_KEY="${1#*=}"; shift ;;
         --remoteinstall) REMOTE_INSTALL="yes"; shift ;;
-        --keeplocal) KEEP_LOCAL="yes"; shift ;; # Parse new flag
+        --keeplocal) KEEP_LOCAL="yes"; shift ;;
+        --installonly) INSTALL_ONLY="yes"; shift ;; # Parse new flag
         --listonly) LIST_ONLY="yes"; shift ;;
         --prerun=*) PRERUN_SCRIPT="${1#*=}"; shift ;;
         -*) echo "Unknown option: $1. Use --help for usage."; exit 1 ;;
@@ -57,94 +60,76 @@ if [[ -z "$TARGET_OS" || -z "$PACKAGES" ]]; then
     exit 1
 fi
 
-if [[ -n "$REMOTE_KEY" && ! -f "$REMOTE_KEY" ]]; then
-    echo "Error: SSH key not found at $REMOTE_KEY"
-    exit 1
-fi
-
-if [[ -n "$PRERUN_SCRIPT" && ! -f "$PRERUN_SCRIPT" ]]; then
-    echo "Error: Prerun script not found at $PRERUN_SCRIPT"
-    exit 1
-fi
-
 TARGET_OS=$(echo "$TARGET_OS" | tr '[:upper:]' '[:lower:]')
 
-# --- 2. SSH Option Prep ---
-SSH_OPTS=""
-if [[ -n "$REMOTE_KEY" ]]; then
-    SSH_OPTS="-i $REMOTE_KEY"
-fi
-
-# --- 3. Docker Check & Auto-Install ---
-if ! command -v docker &> /dev/null; then
-    echo "Docker not found. Installing..."
-    curl -fsSL https://get.docker.com -o get-docker.sh
-    sudo sh get-docker.sh && rm get-docker.sh
-    DOCKER_CMD="sudo docker"
+# --- 2. Logic Split: Download vs InstallOnly ---
+if [[ "$INSTALL_ONLY" == "yes" ]]; then
+    echo "--> Install-only mode: Preparing existing files..."
+    mkdir -p "$OUTPUT_DIR"
+    for pkg in $PACKAGES; do
+        if [[ -f "$pkg" ]]; then
+            cp "$pkg" "$OUTPUT_DIR/"
+        else
+            echo "Warning: File $pkg not found. Skipping."
+        fi
+    done
 else
-    DOCKER_CMD="docker"
+    # --- 3. Docker Check & Download Logic (Original Logic) ---
+    if ! command -v docker &> /dev/null; then
+        echo "Docker not found. Installing..."
+        curl -fsSL https://get.docker.com -o get-docker.sh
+        sudo sh get-docker.sh && rm get-docker.sh
+        DOCKER_CMD="sudo docker"
+    else
+        DOCKER_CMD="docker"
+    fi
+
+    DOCKER_VOLUMES="-v $(realpath "$OUTPUT_DIR"):/download"
+    PRERUN_CMD=""
+    if [[ -n "$PRERUN_SCRIPT" ]]; then
+        DOCKER_VOLUMES="$DOCKER_VOLUMES -v $(realpath "$PRERUN_SCRIPT"):/prerun.sh:ro"
+        PRERUN_CMD="bash /prerun.sh && "
+    fi
+
+    case "$TARGET_OS" in
+        rocky8|rocky9|rocky10|rhel8|rhel9|rhel10|oracle9)
+            if [[ "$TARGET_OS" == "oracle9" ]]; then IMAGE="oraclelinux:9"
+            else IMAGE="rockylinux:${TARGET_OS//[!0-9]/}"; fi
+            EPEL_PREP=""
+            if [[ $PACKAGES == *"epel-release"* ]]; then EPEL_PREP="dnf install -y epel-release && "; fi
+            if [[ "$LIST_ONLY" == "yes" ]]; then
+                $DOCKER_CMD run --rm $DOCKER_VOLUMES "$IMAGE" bash -c "${PRERUN_CMD}${EPEL_PREP}dnf install -y dnf-plugins-core &>/dev/null && dnf repoquery --requires --resolve --recursive $PACKAGES"
+                exit 0
+            fi
+            mkdir -p "$OUTPUT_DIR"
+            $DOCKER_CMD run --rm $DOCKER_VOLUMES "$IMAGE" bash -c "${PRERUN_CMD}${EPEL_PREP}dnf install -y dnf-plugins-core && dnf download --resolve --destdir=/download $PACKAGES"
+            ;;
+        ubuntu20|ubuntu22|ubuntu24)
+            VERSION="${TARGET_OS//[!0-9]/}.04"
+            IMAGE="ubuntu:$VERSION"
+            if [[ "$LIST_ONLY" == "yes" ]]; then
+                $DOCKER_CMD run --rm $DOCKER_VOLUMES "$IMAGE" bash -c "${PRERUN_CMD}apt-get update &>/dev/null && apt-get install --simulate $PACKAGES | grep '^Inst'"
+                exit 0
+            fi
+            mkdir -p "$OUTPUT_DIR"
+            $DOCKER_CMD run --rm $DOCKER_VOLUMES "$IMAGE" bash -c "${PRERUN_CMD}apt-get update && apt-get install -y --download-only $PACKAGES && cp /var/cache/apt/archives/*.deb /download/"
+            ;;
+        *) echo "Error: Supported targets are $SUPPORTED_TARGETS"; exit 1 ;;
+    esac
 fi
 
-# --- 4. Prep Docker Execution Command ---
-DOCKER_VOLUMES="-v $(realpath "$OUTPUT_DIR"):/download"
-PRERUN_CMD=""
-
-if [[ -n "$PRERUN_SCRIPT" ]]; then
-    DOCKER_VOLUMES="$DOCKER_VOLUMES -v $(realpath "$PRERUN_SCRIPT"):/prerun.sh:ro"
-    PRERUN_CMD="bash /prerun.sh && "
-fi
-
-# --- 5. Execution Logic ---
-case "$TARGET_OS" in
-    rocky8|rocky9|rocky10|rhel8|rhel9|rhel10|oracle9)
-        if [[ "$TARGET_OS" == "oracle9" ]]; then IMAGE="oraclelinux:9"
-        else IMAGE="rockylinux:${TARGET_OS//[!0-9]/}"; fi
-
-        EPEL_PREP=""
-        if [[ $PACKAGES == *"epel-release"* ]]; then EPEL_PREP="dnf install -y epel-release && "; fi
-
-        if [[ "$LIST_ONLY" == "yes" ]]; then
-            echo "--> Listing dependencies for $PACKAGES on $TARGET_OS..."
-            $DOCKER_CMD run --rm $DOCKER_VOLUMES "$IMAGE" bash -c "${PRERUN_CMD}${EPEL_PREP}dnf install -y dnf-plugins-core &>/dev/null && dnf repoquery --requires --resolve --recursive $PACKAGES"
-            exit 0
-        fi
-
-        mkdir -p "$OUTPUT_DIR"
-        echo "--> Fetching RPMs for $TARGET_OS..."
-        $DOCKER_CMD run --rm $DOCKER_VOLUMES "$IMAGE" bash -c \
-            "${PRERUN_CMD}${EPEL_PREP}dnf install -y dnf-plugins-core && dnf download --resolve --destdir=/download $PACKAGES"
-        ;;
-    ubuntu20|ubuntu22|ubuntu24)
-        VERSION="${TARGET_OS//[!0-9]/}.04"
-        IMAGE="ubuntu:$VERSION"
-
-        if [[ "$LIST_ONLY" == "yes" ]]; then
-            echo "--> Listing dependencies for $PACKAGES on $TARGET_OS ($VERSION)..."
-            $DOCKER_CMD run --rm $DOCKER_VOLUMES "$IMAGE" bash -c "${PRERUN_CMD}apt-get update &>/dev/null && apt-get install --simulate $PACKAGES | grep '^Inst'"
-            exit 0
-        fi
-
-        mkdir -p "$OUTPUT_DIR"
-        echo "--> Fetching DEBs for $TARGET_OS ($VERSION)..."
-        $DOCKER_CMD run --rm $DOCKER_VOLUMES "$IMAGE" bash -c \
-            "${PRERUN_CMD}apt-get update && apt-get install -y --download-only $PACKAGES && cp /var/cache/apt/archives/*.deb /download/"
-        ;;
-    *)
-        echo "Error: Supported targets are $SUPPORTED_TARGETS"
-        exit 1
-        ;;
-esac
-
-# --- 6. Permissions & Empty Check ---
+# --- 4. Permissions & Empty Check ---
 sudo chown -R $USER:$USER "$OUTPUT_DIR"
-
 if [ -z "$(ls -A "$OUTPUT_DIR")" ]; then
-    echo "Error: No packages were downloaded."
+    echo "Error: No packages found in $OUTPUT_DIR to process."
     exit 1
 fi
 
-# --- 7. Transfer & Remote Installation ---
+# --- 5. Transfer & Remote Installation ---
 INSTALL_SUCCESS="no"
+SSH_OPTS=""
+if [[ -n "$REMOTE_KEY" ]]; then SSH_OPTS="-i $REMOTE_KEY"; fi
+
 if [[ -n "$REMOTE_LOC" ]]; then
     echo "--> Transferring packages to $REMOTE_LOC..."
     REMOTE_HOST=$(echo "$REMOTE_LOC" | cut -d: -f1)
@@ -163,11 +148,11 @@ if [[ -n "$REMOTE_LOC" ]]; then
     fi
 fi
 
-# --- 8. Cleanup ---
+# --- 6. Cleanup ---
 if [[ "$REMOTE_INSTALL" == "yes" && "$INSTALL_SUCCESS" == "yes" && "$KEEP_LOCAL" == "no" ]]; then
-    echo "--> Cleaning up local packages in $OUTPUT_DIR..."
+    echo "--> Cleaning up local packages..."
     rm -rf "$OUTPUT_DIR"
-    echo "Done! Local files removed (use --keeplocal to prevent this)."
+    echo "Done! Local files removed."
 else
     echo "Done! Local files are in: $OUTPUT_DIR"
 fi
