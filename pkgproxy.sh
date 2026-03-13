@@ -9,6 +9,7 @@ REMOTE_KEY=""
 LIST_ONLY="no"
 PRERUN_SCRIPT=""
 PACKAGES=""
+KEEP_LOCAL="no" # New default
 SUPPORTED_TARGETS="rocky8, rocky9, rocky10, rhel8, rhel9, rhel10, oracle9, ubuntu20, ubuntu22, ubuntu24"
 
 # --- Help Function ---
@@ -20,7 +21,8 @@ show_help() {
     echo "  --output=<path>          Local directory for downloads (Default: ./packages)"
     echo "  --remotelocation=<loc>   Remote destination (e.g., user@ip:/path)"
     echo "  --remotekey=<path>       Path to SSH private key for remote transfer/install"
-    echo "  --remoteinstall          Trigger installation on the remote host after transfer (requires presence of --remotelocation)"
+    echo "  --remoteinstall          Trigger installation on the remote host after transfer (requires --remotelocation to be specified)"
+    echo "  --keeplocal              Keep downloaded packages locally after remote install (Default: delete if remoteinstall used)"
     echo "  --listonly               Show dependencies without downloading"
     echo "  --prerun=<path>          Local script to run inside container before download"
     echo "  --help                   Display this help message"
@@ -41,6 +43,7 @@ while [[ "$#" -gt 0 ]]; do
         --remotelocation=*) REMOTE_LOC="${1#*=}"; shift ;;
         --remotekey=*) REMOTE_KEY="${1#*=}"; shift ;;
         --remoteinstall) REMOTE_INSTALL="yes"; shift ;;
+        --keeplocal) KEEP_LOCAL="yes"; shift ;; # Parse new flag
         --listonly) LIST_ONLY="yes"; shift ;;
         --prerun=*) PRERUN_SCRIPT="${1#*=}"; shift ;;
         -*) echo "Unknown option: $1. Use --help for usage."; exit 1 ;;
@@ -96,7 +99,7 @@ case "$TARGET_OS" in
     rocky8|rocky9|rocky10|rhel8|rhel9|rhel10|oracle9)
         if [[ "$TARGET_OS" == "oracle9" ]]; then IMAGE="oraclelinux:9"
         else IMAGE="rockylinux:${TARGET_OS//[!0-9]/}"; fi
-        
+
         EPEL_PREP=""
         if [[ $PACKAGES == *"epel-release"* ]]; then EPEL_PREP="dnf install -y epel-release && "; fi
 
@@ -105,7 +108,7 @@ case "$TARGET_OS" in
             $DOCKER_CMD run --rm $DOCKER_VOLUMES "$IMAGE" bash -c "${PRERUN_CMD}${EPEL_PREP}dnf install -y dnf-plugins-core &>/dev/null && dnf repoquery --requires --resolve --recursive $PACKAGES"
             exit 0
         fi
-        
+
         mkdir -p "$OUTPUT_DIR"
         echo "--> Fetching RPMs for $TARGET_OS..."
         $DOCKER_CMD run --rm $DOCKER_VOLUMES "$IMAGE" bash -c \
@@ -114,7 +117,7 @@ case "$TARGET_OS" in
     ubuntu20|ubuntu22|ubuntu24)
         VERSION="${TARGET_OS//[!0-9]/}.04"
         IMAGE="ubuntu:$VERSION"
-        
+
         if [[ "$LIST_ONLY" == "yes" ]]; then
             echo "--> Listing dependencies for $PACKAGES on $TARGET_OS ($VERSION)..."
             $DOCKER_CMD run --rm $DOCKER_VOLUMES "$IMAGE" bash -c "${PRERUN_CMD}apt-get update &>/dev/null && apt-get install --simulate $PACKAGES | grep '^Inst'"
@@ -141,6 +144,7 @@ if [ -z "$(ls -A "$OUTPUT_DIR")" ]; then
 fi
 
 # --- 7. Transfer & Remote Installation ---
+INSTALL_SUCCESS="no"
 if [[ -n "$REMOTE_LOC" ]]; then
     echo "--> Transferring packages to $REMOTE_LOC..."
     REMOTE_HOST=$(echo "$REMOTE_LOC" | cut -d: -f1)
@@ -152,11 +156,18 @@ if [[ -n "$REMOTE_LOC" ]]; then
     if [[ "$REMOTE_INSTALL" == "yes" ]]; then
         echo "--> Triggering remote installation..."
         if [[ "$TARGET_OS" == *"ubuntu"* ]]; then
-             ssh $SSH_OPTS -t "$REMOTE_HOST" "sudo dpkg -i $REMOTE_PATH/*.deb || sudo apt-get install -f -y"
+             ssh $SSH_OPTS -t "$REMOTE_HOST" "sudo dpkg -i $REMOTE_PATH/*.deb || sudo apt-get install -f -y" && INSTALL_SUCCESS="yes"
         else
-             ssh $SSH_OPTS -t "$REMOTE_HOST" "sudo dnf localinstall -y --disablerepo='*' $REMOTE_PATH/epel-release*.rpm 2>/dev/null; sudo dnf localinstall -y --disablerepo='*' $REMOTE_PATH/*.rpm"
+             ssh $SSH_OPTS -t "$REMOTE_HOST" "sudo dnf localinstall -y --disablerepo='*' $REMOTE_PATH/epel-release*.rpm 2>/dev/null; sudo dnf localinstall -y --disablerepo='*' $REMOTE_PATH/*.rpm" && INSTALL_SUCCESS="yes"
         fi
     fi
 fi
 
-echo "Done! Local files are in: $OUTPUT_DIR"
+# --- 8. Cleanup ---
+if [[ "$REMOTE_INSTALL" == "yes" && "$INSTALL_SUCCESS" == "yes" && "$KEEP_LOCAL" == "no" ]]; then
+    echo "--> Cleaning up local packages in $OUTPUT_DIR..."
+    rm -rf "$OUTPUT_DIR"
+    echo "Done! Local files removed (use --keeplocal to prevent this)."
+else
+    echo "Done! Local files are in: $OUTPUT_DIR"
+fi
