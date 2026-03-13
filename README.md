@@ -10,6 +10,7 @@ Options:
 -  `--remotelocation=<loc> ` Remote destination (e.g., user@ip:/path)
 -  `--remotekey=<path>     `  Path to SSH private key for remote transfer/install
 -  `--remoteinstall        ` Trigger installation on the remote host after transfer (requires presence of --remotelocation)
+-  `--keeplocal            ` Used in conjunction with --remoteinstall: if present, will keep the locally downloaded files after successful remote installation, otherwise, defaults to deleting them.
 -  `--listonly             ` Show dependencies without downloading
 -  `--help                 ` Display this help message
 
@@ -17,4 +18,4 @@ Supported Targets:
   rocky8, rocky9, rocky10, rhel8, rhel9, rhel10, oracle9, ubuntu20, ubuntu22, ubuntu24
 
 Example:
-  getpkgs `--target=rocky10 --remotelocation=root@192.168.3.5:/root --remoteinstall --prerun=add_repos.sh epel-release htop`
+  pkgproxy `--target=rocky10 --remotelocation=root@192.168.3.5:/root --remoteinstall --prerun=add_repos.sh epel-release htop`
