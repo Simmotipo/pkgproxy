@@ -10,7 +10,7 @@ LIST_ONLY="no"
 PRERUN_SCRIPT=""
 PACKAGES=""
 KEEP_LOCAL="no"
-INSTALL_ONLY="no" # New default
+INSTALL_ONLY="no"
 SUPPORTED_TARGETS="rocky8, rocky9, rocky10, rhel8, rhel9, rhel10, oracle9, ubuntu20, ubuntu22, ubuntu24"
 
 # --- Help Function ---
@@ -46,7 +46,7 @@ while [[ "$#" -gt 0 ]]; do
         --remotekey=*) REMOTE_KEY="${1#*=}"; shift ;;
         --remoteinstall) REMOTE_INSTALL="yes"; shift ;;
         --keeplocal) KEEP_LOCAL="yes"; shift ;;
-        --installonly) INSTALL_ONLY="yes"; shift ;; # Parse new flag
+        --installonly) INSTALL_ONLY="yes"; shift ;;
         --listonly) LIST_ONLY="yes"; shift ;;
         --prerun=*) PRERUN_SCRIPT="${1#*=}"; shift ;;
         -*) echo "Unknown option: $1. Use --help for usage."; exit 1 ;;
@@ -63,9 +63,15 @@ fi
 TARGET_OS=$(echo "$TARGET_OS" | tr '[:upper:]' '[:lower:]')
 
 # --- 2. Logic Split: Download vs InstallOnly ---
+# Ensure the output directory is clean so we don't transfer old leftovers
+if [[ -d "$OUTPUT_DIR" ]]; then
+    echo "--> Cleaning local output directory: $OUTPUT_DIR"
+    rm -rf "$OUTPUT_DIR"/*
+fi
+mkdir -p "$OUTPUT_DIR"
+
 if [[ "$INSTALL_ONLY" == "yes" ]]; then
     echo "--> Install-only mode: Preparing existing files..."
-    mkdir -p "$OUTPUT_DIR"
     for pkg in $PACKAGES; do
         if [[ -f "$pkg" ]]; then
             cp "$pkg" "$OUTPUT_DIR/"
@@ -74,7 +80,7 @@ if [[ "$INSTALL_ONLY" == "yes" ]]; then
         fi
     done
 else
-    # --- 3. Docker Check & Download Logic (Original Logic) ---
+    # --- 3. Docker Check & Download Logic ---
     if ! command -v docker &> /dev/null; then
         echo "Docker not found. Installing..."
         curl -fsSL https://get.docker.com -o get-docker.sh
@@ -101,7 +107,6 @@ else
                 $DOCKER_CMD run --rm $DOCKER_VOLUMES "$IMAGE" bash -c "${PRERUN_CMD}${EPEL_PREP}dnf install -y dnf-plugins-core &>/dev/null && dnf repoquery --requires --resolve --recursive $PACKAGES"
                 exit 0
             fi
-            mkdir -p "$OUTPUT_DIR"
             $DOCKER_CMD run --rm $DOCKER_VOLUMES "$IMAGE" bash -c "${PRERUN_CMD}${EPEL_PREP}dnf install -y dnf-plugins-core && dnf download --resolve --destdir=/download $PACKAGES"
             ;;
         ubuntu20|ubuntu22|ubuntu24)
@@ -111,7 +116,6 @@ else
                 $DOCKER_CMD run --rm $DOCKER_VOLUMES "$IMAGE" bash -c "${PRERUN_CMD}apt-get update &>/dev/null && apt-get install --simulate $PACKAGES | grep '^Inst'"
                 exit 0
             fi
-            mkdir -p "$OUTPUT_DIR"
             $DOCKER_CMD run --rm $DOCKER_VOLUMES "$IMAGE" bash -c "${PRERUN_CMD}apt-get update && apt-get install -y --download-only $PACKAGES && cp /var/cache/apt/archives/*.deb /download/"
             ;;
         *) echo "Error: Supported targets are $SUPPORTED_TARGETS"; exit 1 ;;
@@ -143,7 +147,8 @@ if [[ -n "$REMOTE_LOC" ]]; then
         if [[ "$TARGET_OS" == *"ubuntu"* ]]; then
              ssh $SSH_OPTS -t "$REMOTE_HOST" "sudo dpkg -i $REMOTE_PATH/*.deb || sudo apt-get install -f -y" && INSTALL_SUCCESS="yes"
         else
-             ssh $SSH_OPTS -t "$REMOTE_HOST" "sudo dnf localinstall -y --disablerepo='*' $REMOTE_PATH/epel-release*.rpm 2>/dev/null; sudo dnf localinstall -y --disablerepo='*' $REMOTE_PATH/*.rpm" && INSTALL_SUCCESS="yes"
+             # Added --best --allowerasing for better conflict resolution
+             ssh $SSH_OPTS -t "$REMOTE_HOST" "sudo dnf localinstall -y --disablerepo='*' $REMOTE_PATH/epel-release*.rpm 2>/dev/null; sudo dnf localinstall -y --best --allowerasing --disablerepo='*' $REMOTE_PATH/*.rpm" && INSTALL_SUCCESS="yes"
         fi
     fi
 fi
